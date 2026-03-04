@@ -23,11 +23,9 @@ jobs:
           tools: composer:v2
       
       - name: Install dependencies
-        working-directory: ./03_code
         run: composer install --no-dev --optimize-autoloader
       
       - name: Run scraper
-        working-directory: ./03_code
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -43,7 +41,7 @@ jobs:
           SCRAPER_RETRY_COUNT: 3
           SCRAPER_DELAY_SEC: 2
           LOG_LEVEL: info
-          LOG_FILE: ./logs/scraper.log
+          LOG_FILE: logs/scraper.log
           LOG_FORMAT: json
         run: php bin/scraper.php
       
@@ -52,12 +50,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: scraper-logs-${{ github.run_id }}
-          path: ./03_code/logs/
+          path: logs/
           retention-days: 30
       
       - name: Check execution status
         if: failure()
-        working-directory: ./03_code
         run: |
           echo "Scraper execution failed. Check logs above."
           exit 1
