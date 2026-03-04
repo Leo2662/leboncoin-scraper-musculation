@@ -7,23 +7,23 @@ use GuzzleHttp\Exception\RequestException;
 use Leboncoin\Scraper\Config\Config;
 use Leboncoin\Scraper\Logger\StructuredLogger;
 use Leboncoin\Scraper\Models\Listing;
-use Symfony\Component\DomCrawler\Crawler;
 use DateTime;
 use Exception;
 
 /**
  * Scraper principal pour Leboncoin
+ * Utilise l'extraction JSON depuis __NEXT_DATA__ (Next.js SSR)
  */
 class LeboncoinScraper
 {
     private GuzzleClient $client;
     private StructuredLogger $logger;
     private array $userAgents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
     ];
 
     public function __construct(StructuredLogger $logger)
@@ -32,14 +32,14 @@ class LeboncoinScraper
 
         // Initialiser le client HTTP Guzzle
         $this->client = new GuzzleClient([
-            'timeout' => Config::get('scraper_timeout_sec', 10),
-            'connect_timeout' => 5,
+            'timeout' => Config::get('scraper_timeout_sec', 15),
+            'connect_timeout' => 10,
             'verify' => true,
         ]);
     }
 
     /**
-     * Scrape les annonces Leboncoin
+     * Scrape les annonces Leboncoin via __NEXT_DATA__ JSON
      *
      * @return Listing[]
      */
@@ -62,8 +62,28 @@ class LeboncoinScraper
                 return [];
             }
 
-            // Parser les annonces
-            $listings = $this->parseListings($html);
+            // Extraire les données JSON depuis __NEXT_DATA__
+            $ads = $this->extractAdsFromNextData($html);
+
+            if (empty($ads)) {
+                $this->logger->logWarning('No ads found in __NEXT_DATA__');
+                return [];
+            }
+
+            $this->logger->logWarning('Ads extracted from JSON', ['count' => count($ads)]);
+
+            // Convertir les ads JSON en objets Listing
+            foreach ($ads as $ad) {
+                try {
+                    $listing = $this->parseAdData($ad);
+                    if ($listing) {
+                        $listings[] = $listing;
+                    }
+                } catch (Exception $e) {
+                    $this->logger->logWarning('Error parsing ad', ['error' => $e->getMessage()]);
+                }
+            }
+
             $this->logger->logWarning('Listings parsed', ['count' => count($listings)]);
 
             // Appliquer un délai pour respecter les limites de taux
@@ -81,24 +101,23 @@ class LeboncoinScraper
     }
 
     /**
-     * Construit l'URL de recherche Leboncoin
+     * Construit l'URL de recherche Leboncoin (format Next.js)
      */
     private function buildSearchUrl(): string
     {
-        $baseUrl = Config::get('leboncoin_search_url', 'https://www.leboncoin.fr/search');
-        $radius = Config::get('leboncoin_radius_km', 50);
-        $lat = Config::get('leboncoin_location_lat', 50.6292);
-        $lng = Config::get('leboncoin_location_lng', 3.0573);
+        $radius = Config::get('leboncoin_radius_km', 50) * 1000; // Convert to meters
+        $lat = Config::get('leboncoin_location_lat', 50.62925);
+        $lng = Config::get('leboncoin_location_lng', 3.05726);
 
-        // Paramètres de recherche
+        // Format Leboncoin : /recherche?category=29&text=...&locations=Lille_59000__LAT_LNG_RADIUS&sort=time
         $params = [
-            'category' => 'sport_hobby',
+            'category' => '29', // Sport & Hobbies
             'text' => 'disque musculation fonte',
-            'location' => 'Lille',
-            'radius' => $radius,
+            'locations' => "Lille_59000__{$lat}_{$lng}_{$radius}",
+            'sort' => 'time',
         ];
 
-        return $baseUrl . '?' . http_build_query($params);
+        return 'https://www.leboncoin.fr/recherche?' . http_build_query($params);
     }
 
     /**
@@ -114,26 +133,43 @@ class LeboncoinScraper
                     'headers' => [
                         'User-Agent' => $userAgent,
                         'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                        'Accept-Language' => 'fr-FR,fr;q=0.9',
+                        'Accept-Language' => 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+                        'Accept-Encoding' => 'gzip, deflate, br',
+                        'Cache-Control' => 'no-cache',
+                        'Connection' => 'keep-alive',
+                        'Sec-Fetch-Dest' => 'document',
+                        'Sec-Fetch-Mode' => 'navigate',
+                        'Sec-Fetch-Site' => 'none',
+                        'Sec-Fetch-User' => '?1',
+                        'Upgrade-Insecure-Requests' => '1',
                     ],
                 ]);
 
-                return (string) $response->getBody();
+                $body = (string) $response->getBody();
+
+                // Vérifier que la page contient bien __NEXT_DATA__
+                if (strpos($body, '__NEXT_DATA__') !== false) {
+                    return $body;
+                }
+
+                $this->logger->logWarning('Page fetched but no __NEXT_DATA__ found', [
+                    'attempt' => $attempt + 1,
+                    'body_length' => strlen($body),
+                ]);
 
             } catch (RequestException $e) {
-                $statusCode = $e->getResponse()?->getStatusCode();
+                $statusCode = $e->getResponse() ? $e->getResponse()->getStatusCode() : 0;
 
                 if ($statusCode === 429) {
-                    // Rate limit - attendre plus longtemps
                     $waitTime = 60 * (2 ** $attempt);
                     $this->logger->logWarning('Rate limited, waiting', ['wait_seconds' => $waitTime]);
                     sleep($waitTime);
                 } elseif ($statusCode === 403) {
-                    // Forbidden - arrêter
-                    $this->logger->logError('Access forbidden (403)', ['url' => $url]);
-                    return null;
+                    $this->logger->logError('Access forbidden (403)', ['url' => $url, 'attempt' => $attempt + 1]);
+                    // Wait and retry with different user agent
+                    $waitTime = 5 * (2 ** $attempt);
+                    sleep($waitTime);
                 } else {
-                    // Autre erreur - retry avec backoff
                     $waitTime = 2 ** $attempt;
                     if ($attempt < $maxRetries - 1) {
                         $this->logger->logWarning('Request failed, retrying', [
@@ -152,74 +188,71 @@ class LeboncoinScraper
     }
 
     /**
-     * Parse les annonces depuis le HTML
-     *
-     * @return Listing[]
+     * Extrait les annonces depuis le JSON __NEXT_DATA__
      */
-    private function parseListings(string $html): array
+    private function extractAdsFromNextData(string $html): array
     {
-        $listings = [];
-        $crawler = new Crawler($html);
-
-        // Sélecteurs CSS pour Leboncoin (à adapter selon la structure actuelle)
-        $listingNodes = $crawler->filter('div.listingCard, a.listing-item, div[data-qa="aditem"]');
-
-        if ($listingNodes->count() === 0) {
-            $this->logger->logWarning('No listings found with current selectors');
+        // Chercher le tag script __NEXT_DATA__
+        if (!preg_match('/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/s', $html, $matches)) {
+            $this->logger->logWarning('__NEXT_DATA__ script tag not found');
             return [];
         }
 
-        $listingNodes->each(function (Crawler $node, $index) use (&$listings) {
-            try {
-                $listing = $this->parseListingNode($node);
-                if ($listing) {
-                    $listings[] = $listing;
-                }
-            } catch (Exception $e) {
-                $this->logger->logWarning('Error parsing listing node', [
-                    'index' => $index,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-        });
+        $jsonData = json_decode($matches[1], true);
+        if (!$jsonData) {
+            $this->logger->logError('Failed to parse __NEXT_DATA__ JSON', ['json_error' => json_last_error_msg()]);
+            return [];
+        }
 
-        return $listings;
+        // Naviguer dans la structure Next.js
+        $ads = $jsonData['props']['pageProps']['searchData']['ads'] ?? [];
+
+        $this->logger->logWarning('Extracted ads from __NEXT_DATA__', [
+            'total' => $jsonData['props']['pageProps']['searchData']['total'] ?? 0,
+            'ads_on_page' => count($ads),
+        ]);
+
+        return $ads;
     }
 
     /**
-     * Parse un nœud d'annonce individuel
+     * Convertit les données JSON d'une annonce en objet Listing
      */
-    private function parseListingNode(Crawler $node): ?Listing
+    private function parseAdData(array $ad): ?Listing
     {
         $listing = new Listing();
 
         try {
-            // Extraire l'ID
-            $listing->id = $this->extractId($node) ?? uniqid();
+            $listing->id = (string) ($ad['list_id'] ?? uniqid());
+            $listing->title = $ad['subject'] ?? 'Unknown';
+            $listing->description = $ad['body'] ?? '';
+            $listing->url = $ad['url'] ?? '';
 
-            // Extraire le titre
-            $listing->title = $this->extractText($node, 'h2, .title, [data-qa="aditem_title"]') ?? 'Unknown';
+            // Prix
+            $prices = $ad['price'] ?? [];
+            $listing->price = !empty($prices) ? (float) $prices[0] : 0;
 
-            // Extraire le prix
-            $priceText = $this->extractText($node, '.price, [data-qa="aditem_price"]');
-            $listing->price = $this->parsePrice($priceText) ?? 0;
+            // Localisation
+            $location = $ad['location'] ?? [];
+            $listing->city = $location['city'] ?? '';
+            $listing->postalCode = $location['zipcode'] ?? '';
+            $listing->location = trim(($listing->city ?? '') . ' ' . ($listing->postalCode ?? ''));
 
-            // Extraire la description
-            $listing->description = $this->extractText($node, '.description, p, [data-qa="aditem_description"]') ?? '';
+            // Date de publication
+            $dateStr = $ad['first_publication_date'] ?? $ad['index_date'] ?? null;
+            if ($dateStr) {
+                try {
+                    $listing->publishedAt = new DateTime($dateStr);
+                } catch (Exception $e) {
+                    $listing->publishedAt = new DateTime();
+                }
+            } else {
+                $listing->publishedAt = new DateTime();
+            }
 
-            // Extraire la localisation
-            $locationText = $this->extractText($node, '.location, [data-qa="aditem_location"]') ?? 'Unknown';
-            $this->parseLocation($locationText, $listing);
-
-            // Extraire l'URL
-            $listing->url = $this->extractUrl($node) ?? '';
-
-            // Extraire la date de publication
-            $dateText = $this->extractText($node, '.date, time, [data-qa="aditem_date"]');
-            $listing->publishedAt = $this->parseDate($dateText) ?? new DateTime();
-
-            // Extraire le poids
-            $weightData = WeightExtractor::extract($listing->title . ' ' . $listing->description);
+            // Extraire le poids depuis titre + description
+            $fullText = $listing->title . ' ' . $listing->description;
+            $weightData = WeightExtractor::extract($fullText);
             $listing->weight = $weightData['weight'];
             $listing->weightConfidence = $weightData['confidence'];
 
@@ -229,131 +262,11 @@ class LeboncoinScraper
             return $listing;
 
         } catch (Exception $e) {
-            $this->logger->logWarning('Error parsing listing', ['error' => $e->getMessage()]);
+            $this->logger->logWarning('Error parsing ad data', [
+                'ad_id' => $ad['list_id'] ?? 'unknown',
+                'error' => $e->getMessage(),
+            ]);
             return null;
-        }
-    }
-
-    /**
-     * Extrait le texte d'un sélecteur
-     */
-    private function extractText(Crawler $node, string $selector): ?string
-    {
-        $selectors = explode(',', $selector);
-        foreach ($selectors as $sel) {
-            $sel = trim($sel);
-            try {
-                $text = $node->filter($sel)->text();
-                if (!empty($text)) {
-                    return trim($text);
-                }
-            } catch (Exception $e) {
-                continue;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Extrait l'URL d'une annonce
-     */
-    private function extractUrl(Crawler $node): ?string
-    {
-        $selectors = ['a', 'a.listing-link', '[data-qa="aditem_link"]'];
-        foreach ($selectors as $selector) {
-            try {
-                $url = $node->filter($selector)->attr('href');
-                if ($url && filter_var($url, FILTER_VALIDATE_URL)) {
-                    return $url;
-                }
-            } catch (Exception $e) {
-                continue;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Extrait l'ID de l'annonce
-     */
-    private function extractId(Crawler $node): ?string
-    {
-        try {
-            // Chercher dans les attributs data
-            $id = $node->attr('data-id') ?? $node->attr('data-listing-id');
-            if ($id) return $id;
-
-            // Extraire de l'URL
-            $url = $this->extractUrl($node);
-            if ($url && preg_match('/\/(\d+)\.htm/', $url, $matches)) {
-                return $matches[1];
-            }
-        } catch (Exception $e) {
-            // Continuer
-        }
-
-        return null;
-    }
-
-    /**
-     * Parse le prix depuis le texte
-     */
-    private function parsePrice(string $priceText = null): ?float
-    {
-        if (!$priceText) return null;
-
-        // Extraire le nombre du texte
-        if (preg_match('/(\d+(?:[.,]\d{2})?)\s*€/', $priceText, $matches)) {
-            $price = str_replace(',', '.', $matches[1]);
-            return (float)$price;
-        }
-
-        return null;
-    }
-
-    /**
-     * Parse la localisation
-     */
-    private function parseLocation(string $locationText, Listing $listing): void
-    {
-        $listing->location = $locationText;
-
-        // Extraire la ville et le code postal
-        if (preg_match('/(\w+)\s+(\d{5})/', $locationText, $matches)) {
-            $listing->city = $matches[1];
-            $listing->postalCode = $matches[2];
-        } else {
-            $listing->city = $locationText;
-            $listing->postalCode = '';
-        }
-    }
-
-    /**
-     * Parse la date depuis le texte
-     */
-    private function parseDate(string $dateText = null): ?DateTime
-    {
-        if (!$dateText) return null;
-
-        try {
-            // Essayer différents formats
-            $formats = [
-                'Y-m-d H:i:s',
-                'd/m/Y H:i',
-                'd/m/Y',
-                'Y-m-d',
-            ];
-
-            foreach ($formats as $format) {
-                $date = DateTime::createFromFormat($format, $dateText);
-                if ($date) return $date;
-            }
-
-            // Sinon, retourner maintenant
-            return new DateTime();
-
-        } catch (Exception $e) {
-            return new DateTime();
         }
     }
 }
