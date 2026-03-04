@@ -1,0 +1,63 @@
+name: Leboncoin Scraper
+
+on:
+  schedule:
+    # Exécution toutes les 20 minutes
+    - cron: '*/20 * * * *'
+  # Permettre le déclenchement manuel
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          extensions: curl, json, dom, xml
+          tools: composer:v2
+      
+      - name: Install dependencies
+        working-directory: ./03_code
+        run: composer install --no-dev --optimize-autoloader
+      
+      - name: Run scraper
+        working-directory: ./03_code
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LEBONCOIN_SEARCH_URL: https://www.leboncoin.fr/search
+          LEBONCOIN_LOCATION_LAT: 50.6292
+          LEBONCOIN_LOCATION_LNG: 3.0573
+          LEBONCOIN_RADIUS_KM: 50
+          PRICE_PER_KG_THRESHOLD: 1.25
+          MIN_WEIGHT_KG: 5
+          POSITIVE_KEYWORDS: "disque musculation,disque fonte,poids,haltère,fonte,disques"
+          NEGATIVE_KEYWORDS: "frein,auto,vinyle,CD,DVD,ciment,plastique,caoutchouc,bumper"
+          SCRAPER_TIMEOUT_SEC: 10
+          SCRAPER_RETRY_COUNT: 3
+          SCRAPER_DELAY_SEC: 2
+          LOG_LEVEL: info
+          LOG_FILE: ./logs/scraper.log
+          LOG_FORMAT: json
+        run: php bin/scraper.php
+      
+      - name: Upload logs as artifacts
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: scraper-logs-${{ github.run_id }}
+          path: ./03_code/logs/
+          retention-days: 30
+      
+      - name: Check execution status
+        if: failure()
+        working-directory: ./03_code
+        run: |
+          echo "Scraper execution failed. Check logs above."
+          exit 1
