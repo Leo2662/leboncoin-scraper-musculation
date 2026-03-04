@@ -2,7 +2,6 @@
 
 namespace Leboncoin\Scraper\Scraper;
 
-use Goutte\Client;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Exception\RequestException;
 use Leboncoin\Scraper\Config\Config;
@@ -17,7 +16,7 @@ use Exception;
  */
 class LeboncoinScraper
 {
-    private Client $client;
+    private GuzzleClient $client;
     private StructuredLogger $logger;
     private array $userAgents = [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -31,14 +30,12 @@ class LeboncoinScraper
     {
         $this->logger = $logger;
 
-        // Initialiser le client Goutte avec Guzzle
-        $guzzleClient = new GuzzleClient([
+        // Initialiser le client HTTP Guzzle
+        $this->client = new GuzzleClient([
             'timeout' => Config::get('scraper_timeout_sec', 10),
             'connect_timeout' => 5,
             'verify' => true,
         ]);
-
-        $this->client = new Client($guzzleClient);
     }
 
     /**
@@ -121,7 +118,7 @@ class LeboncoinScraper
                     ],
                 ]);
 
-                return $response->getContent();
+                return (string) $response->getBody();
 
             } catch (RequestException $e) {
                 $statusCode = $e->getResponse()?->getStatusCode();
