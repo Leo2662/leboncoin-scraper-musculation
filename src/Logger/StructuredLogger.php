@@ -4,8 +4,8 @@ namespace Leboncoin\Scraper\Logger;
 
 use DateTime;
 use Monolog\Logger;
-use Monolog\Handlers\StreamHandler;
-use Monolog\Formatters\JsonFormatter;
+use Monolog\Handler\StreamHandler;
+use Monolog\Formatter\JsonFormatter;
 
 /**
  * Logger structuré pour logs JSON
